@@ -1,0 +1,6 @@
+{
+  "name": "Cel'iêncio",
+  "description": "Bloqueador inteligente de chamadas e SMS indesejados para silêncio e paz.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
