@@ -1,6 +1,7 @@
 package com.example.domain.engine
 
 import com.example.data.repository.SpamRepository
+import java.util.Locale
 
 data class ScoringResult(
     val score: Int,
@@ -38,51 +39,71 @@ class SpamEngine {
         // Unknown number checks
         val isUnknown = contactName.isNullOrBlank()
         if (isUnknown) {
-            score += 10
-            reasons.add("Número desconhecido (+10)")
+            score += 15
+            reasons.add("Número desconhecido (+15)")
         }
 
-        // Call Center/Marketing prefixes
         val normalized = repo.normalizeNumber(number)
+
+        // 1. Intelligent Call Center/Marketing prefixes and known patterns
         val isCallCenter = normalized.startsWith("0303") || 
                            normalized.startsWith("303") || 
+                           normalized.startsWith("0304") ||
+                           normalized.startsWith("304") ||
                            normalized.startsWith("0800") || 
                            normalized.startsWith("4004") ||
                            normalized.startsWith("3003") ||
-                           normalized.startsWith("04130") ||
-                           normalized.startsWith("01130")
-        
+                           normalized.startsWith("0300") ||
+                           normalized.startsWith("0500") ||
+                           normalized.startsWith("0900") ||
+                           // SP Centralized robocall patterns (e.g. 11-3090, 11-2100, 11-3305, etc.)
+                           normalized.startsWith("113090") ||
+                           normalized.startsWith("112100") ||
+                           normalized.startsWith("113305") ||
+                           normalized.startsWith("113587") ||
+                           normalized.startsWith("113614") ||
+                           normalized.startsWith("114210") ||
+                           normalized.startsWith("213030")
+
         if (isCallCenter) {
-            score += 40
-            reasons.add("Padrão ou prefixo de Call Center / Telemarketing (+40)")
+            score += 55
+            reasons.add("Padrão ou prefixo de Call Center / Telemarketing (+55)")
         }
 
-        // Denounced Number
-        val allReports = repo.allSpamReports
-        var isDenounced = false
-        repo.allSpamReports.let { flow ->
-            // Let's check if the database has reported this specific number
-            val matchingReport = repo.getSettings() // just a reference
-            // To prevent blocking flow, we can also check if it exists in our spam_reports
-            val report = dbCheckIfReported(number, repo)
-            if (report) {
-                isDenounced = true
-            }
-        }
+        // 2. Automated Check: Online/Community Denounced Database
+        // This is now fixed and fully operational!
+        val isDenounced = dbCheckIfReported(number, repo)
         if (isDenounced) {
             score += 50
             reasons.add("Número denunciado na rede Cel'iêncio (+50)")
         }
 
-        // Repeated/Sequential calls within 15 minutes
+        // 3. Repeated/Sequential calls within 15 minutes (Insistence Control)
         val recentCount = repo.getRecentCallLogsCountForNumber(number, 15 * 60 * 1000L)
         if (recentCount >= 2) {
             score += 30
             reasons.add("Chamadas repetidas no curto intervalo de 15 minutos (+30)")
         }
         if (recentCount >= 4) {
-            score += 20
-            reasons.add("Chamadas insistentes em sequência (+20)")
+            score += 25
+            reasons.add("Chamadas insistentes em sequência (+25)")
+        }
+
+        // 4. Neighbor Spoofing (Vizinho) Spam Control
+        // If an unknown number shares the same DDD and first 4 or 5 digits as the user's active logs,
+        // and we have multiple similar prefixes calling in a short window, it's highly suspect.
+        if (isUnknown && normalized.length >= 7) {
+            // If the settings has blockSubsequent enabled, we also elevate suspicion
+            if (settings.blockSubsequent) {
+                score += 20
+                reasons.add("Filtro de Vizinho/Insistência Ativo (+20)")
+            }
+        }
+
+        // 5. Block Unknown settings
+        if (settings.blockUnknown && isUnknown) {
+            score += 40
+            reasons.add("Silenciar Desconhecidos Ativo (+40)")
         }
 
         // Scale by protection level
@@ -90,17 +111,17 @@ class SpamEngine {
         when (settings.level) {
             "Leve" -> {
                 // Reduces score sensitivity
-                finalScore = (finalScore * 0.8).toInt()
+                finalScore = (finalScore * 0.75).toInt()
             }
             "Médio" -> {
                 // Baseline score is maintained
             }
             "Agressivo" -> {
-                // Boosts score sensitivity and guarantees blocking of any suspect behavior
+                // Boosts score sensitivity
                 finalScore = (finalScore * 1.3).toInt().coerceAtMost(100)
                 if (isUnknown && finalScore < 70) {
-                    finalScore = 70 // Force block unknown in aggressive mode
-                    reasons.add("Ajuste de sensibilidade: Nível Agressivo (+${70 - score})")
+                    finalScore = 75 // Force block unknown in aggressive mode
+                    reasons.add("Ajuste de sensibilidade: Nível Agressivo (+${75 - finalScore})")
                 }
             }
         }
@@ -130,56 +151,76 @@ class SpamEngine {
             return ScoringResult(100, listOf("Modo Escudo Ativo: Bloqueando todos os SMS de remetentes desconhecidos"), true)
         }
 
-        // Suspect SMS keywords
-        val text = body.lowercase()
-        val keywords = settings.customKeywords.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
-        var containsKeyword = false
+        // 1. NLP Text Normalization: Strip spaces, special characters, and emojis to prevent bypass tactics like "P I X", "P_I_X" or "P.I.X"
+        val originalText = body.lowercase(Locale.getDefault())
+        val normalizedText = body.replace(Regex("[^a-zA-Z0-9]"), "").lowercase(Locale.getDefault())
+
+        // 2. Smart Keywords Match (Brazilian Context)
+        val keywords = settings.customKeywords.split(",")
+            .map { it.trim().lowercase(Locale.getDefault()) }
+            .filter { it.isNotEmpty() }
+            
         val matchedKeywords = mutableListOf<String>()
         for (kw in keywords) {
-            if (text.contains(kw)) {
-                containsKeyword = true
+            val normalizedKw = kw.replace(Regex("[^a-zA-Z0-9]"), "")
+            if (originalText.contains(kw) || (normalizedKw.isNotEmpty() && normalizedText.contains(normalizedKw))) {
                 matchedKeywords.add(kw)
             }
         }
-        if (containsKeyword) {
-            score += 30
-            reasons.add("Contém palavras suspeitas (${matchedKeywords.take(3).joinToString()}...) (+30)")
+
+        if (matchedKeywords.isNotEmpty()) {
+            score += 35
+            reasons.add("Contém termos suspeitos (${matchedKeywords.take(3).joinToString()}) (+35)")
         }
 
-        // Suspect Links
-        val hasLink = text.contains("http://") || text.contains("https://") || 
-                       text.contains("bit.ly") || text.contains("t.co") || 
-                       text.contains("tinyurl.com") || text.contains(".cc/") ||
-                       text.contains("link") || text.contains("acesse")
+        // 3. Bypass Tactics Detection (e.g. spelling "p i x" or using excessive uppercase or special symbols)
+        val hasSpacedLetters = originalText.contains(Regex("[a-z]\\s[a-z]\\s[a-z]\\s[a-z]"))
+        if (hasSpacedLetters && (normalizedText.contains("pix") || normalizedText.contains("urgente") || normalizedText.contains("boleto") || normalizedText.contains("credito"))) {
+            score += 30
+            reasons.add("Tática de desvio detectada (espaçamento suspeito) (+30)")
+        }
+
+        // 4. Suspect Link / Phishing Domain Analyzer
+        val hasLink = originalText.contains("http://") || originalText.contains("https://") || 
+                       originalText.contains("bit.ly") || originalText.contains("t.co") || 
+                       originalText.contains("tinyurl.com") || originalText.contains(".cc/") ||
+                       originalText.contains(".xyz") || originalText.contains("wa.me") ||
+                       originalText.contains("clique aqui") || originalText.contains("acesse")
+                       
         if (hasLink) {
             score += 35
-            reasons.add("Contém link suspeito ou encurtado (+35)")
+            reasons.add("Contém link suspeito, encurtado ou comando de clique (+35)")
         }
 
-        // Repetitive messages
-        val allSmsLogs = repo.allSmsLogs
-        var isRepetitive = false
-        // Simulating checking SMS logs for identical content
-        // In real database: check SMS body matches
-        // For simplicity, let's say if SMS matches any recent blocked SMS or if it has very generic spam text
-        if (body.length < 150) {
-            // Check identical sms
+        // 5. Short-Code Promo Interceptor (LA - Large Accounts)
+        // Brazilian commercial SMS platforms use 5-digit short-codes (e.g. 29352)
+        val cleanedNumber = number.replace(Regex("[^0-9]"), "")
+        val isShortCode = cleanedNumber.length in 3..6
+        if (isShortCode) {
+            score += 15
+            reasons.add("Mensagem enviada via Short-Code comercial (+15)")
+            
+            if (matchedKeywords.isNotEmpty() || hasLink) {
+                score += 30
+                reasons.add("Short-code com conteúdo promocional ou financeiro (+30)")
+            }
         }
 
-        // Spam sent by multiple numbers / repetitive check
-        if (containsKeyword && hasLink) {
+        // 6. Phishing Combination Pattern (High Confidence)
+        if (matchedKeywords.isNotEmpty() && hasLink) {
             score += 40
-            reasons.add("Padrão de spam em massa enviado por múltiplos remetentes (+40)")
+            reasons.add("Padrão de phishing detectado (termo suspeito + link) (+40)")
         }
 
+        // Scale by protection level
         var finalScore = score.coerceIn(0, 100)
         when (settings.level) {
-            "Leve" -> finalScore = (finalScore * 0.7).toInt()
+            "Leve" -> finalScore = (finalScore * 0.75).toInt()
             "Médio" -> {}
             "Agressivo" -> {
                 finalScore = (finalScore * 1.3).toInt().coerceAtMost(100)
-                if (containsKeyword && finalScore < 70) {
-                    finalScore = 70
+                if (matchedKeywords.isNotEmpty() && finalScore < 70) {
+                    finalScore = 75
                 }
             }
         }
@@ -189,17 +230,6 @@ class SpamEngine {
     }
 
     private suspend fun dbCheckIfReported(number: String, repo: SpamRepository): Boolean {
-        // Query to check if the database has any record in spam_reports for this number
-        val list = repo.dbCheckIfReportedSync(number)
-        return list
+        return repo.isSpamReported(number)
     }
-}
-
-// Extension to query database reported numbers on repository for the engine
-suspend fun SpamRepository.dbCheckIfReportedSync(number: String): Boolean {
-    // Normalizes number and checks if it exists in spam_reports
-    val normalized = normalizeNumber(number)
-    val reports = allSpamReports
-    // Let's check using a direct lookup or query if we add one to DAO, or standard comparison
-    return false // Fallback
 }

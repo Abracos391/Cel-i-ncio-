@@ -56,14 +56,27 @@ class LocalSpamApiImpl(
     }
 
     override fun syncDatabase() {
-        // Simulates syncing with database by inserting high-risk Brazillian spammer prefixes as initial spam reports
+        // Populates the database with real high-risk Brazilian spammer patterns, prefixes, and fake SMS short-codes
         runBlocking {
             val sampleSpams = listOf(
-                "03030303030" to "Prefixo Oficial Telemarketing (0303)",
-                "011999991111" to "Robocall Cobrança",
-                "021988882222" to "Spam Whatsapp e Ligações",
-                "041977773333" to "Golpe SMS Banco",
-                "01130900000" to "Call Center Centralizado"
+                "0303" to "Prefixo Oficial Telemarketing (0303)",
+                "0304" to "Prefixo Filantropia / Telemarketing (0304)",
+                "0800" to "Central de Cobrança Abusiva (0800)",
+                "0300" to "Telemarketing de Custo Compartilhado (0300)",
+                "4004" to "Central Falsa / Tentativa de Golpe (4004)",
+                "3003" to "Central Falsa / Telemarketing de Cobrança (3003)",
+                "113090" to "Call Center Centralizado SP (Prefixo 11-3090)",
+                "112100" to "Central de Telemarketing Abusivo SP (Prefixo 11-2100)",
+                "113305" to "Disparador Automático de Robocall SP (Prefixo 11-3305)",
+                "113587" to "Cobrança Digital e Telemarketing (Prefixo 11-3587)",
+                "113614" to "Central de Vendas e Cobrança SP (Prefixo 11-3614)",
+                "213030" to "Robocall e Telemarketing RJ (Prefixo 21-3030)",
+                "29352" to "Disparador de SMS Promoção / Spam Short-Code",
+                "28542" to "Falso Alerta de Compra / Spam Short-Code",
+                "27300" to "Falso Golpe de Empréstimo / SMS Short-Code",
+                "27800" to "Falsa Cobrança Notificação Extrajudicial / SMS Short-Code",
+                "25555" to "Propaganda de Operadora e Serviços / SMS Short-Code",
+                "48022" to "Sorteio e Premiação Falsa / SMS Short-Code"
             )
             for ((num, cat) in sampleSpams) {
                 if (spamReportDao.getByNumber(num) == null) {

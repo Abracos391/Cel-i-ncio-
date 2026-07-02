@@ -114,6 +114,11 @@ class SpamRepository(private val db: AppDatabase) {
         return blacklistDao.getByNumber(normalized) != null
     }
 
+    suspend fun isSpamReported(number: String): Boolean {
+        val normalized = normalizeNumber(number)
+        return spamReportDao.getByNumber(normalized) != null
+    }
+
     suspend fun getRecentCallLogsCountForNumber(number: String, timeWindowMs: Long): Int {
         val logs = callLogDao.getLogsForNumber(number)
         val cutoff = System.currentTimeMillis() - timeWindowMs
